@@ -1,0 +1,431 @@
+---
+title: "Performance of a Casual Osu! Player 2.0"
+author: "Yanyu Yang"
+date: "4/21/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = TRUE, fig.align = "center", warning = F, message = F, R.options=list(max.print=100))
+```
+
+## Introduction
+
+My project will once again be focused on Osu!, a free PC rhythm game by Dean "peppy" Herbert. The main goal is to click circles in time to songs where users can create their own "map" of patterns.^1^ Although I mainly play the game in single player mode, there is a built in ranking system. Performance points, officially abbreviated as "pp", are awarded at the end of every map. Rankings are calculated based on each player's total pp. 
+
+At the time of data collection on March 17, 2021, I was ranked 535,723rd out of the entire player base with 884pp. As one can deduct from the title, I am a fairly casual player. The following sections will analyze my Osu! performance.
+
+### Dataset
+
+```{r}
+osu <- read.csv("~/sds 348/project/osu.csv")
+head(osu)
+```
+
+The dataset I will use for this project is the merged data set from project 1. Some variables are taken from my Osu! profile, updated as of 3/17/2021. Other variables are taken from pps-by-grumd, a fanmade site which scrapes and collects official data for each Osu! map. The variable descriptions are listed below.
+
+* **song**: the title of the song used for the map
+* **difficulty_name**: the difficulty category, usually "easy", "hard", "insane", or "expert". difficulties listed as [name]'s [difficulty] indicate a guest mapper.
+* **accuracy**: hits can get a score of 300, 100, 50, or miss. accuracy is calculated as (100\*# of 300s) + (67.77\*# of 100s) + (33.33\* # of 50s) + (0\* # of misses)
+* **pp**: performance points awarded to me
+* **top_pp**: average performance points awarded to the top 11,000 Osu! players. this more or represents the top pp ceiling, since even top players don't make perfect pp plays with 100% accuracy
+* **length**: the length of the map in seconds
+* **bpm**: beats per minute
+* **difficulty**: the current difficulty system using stars. can range from 0 stars to 7+ stars
+* **overweightness**: the number of top 11,000 players who have this map in their top 50 plays. higher overweightness means that map grants higher than average pp
+* **difficulty_category**: difficulty by category
+
+The last variable, `difficulty_category`, was converted from `difficulty` according to the Osu! Knowledge Base. The knowledge base, which is an official encyclopedia of Osu! terminology, lists the cutoffs for star ratings (`difficulty`) of each group (`difficulty_category`).
+
+### Tidy
+
+Since I tidied the data set for my last project, I did not have to tidy it again. There are a total of 50 maps in this data set where each map is an individual observation, and a total of 10 variables. I am interested in doing further analysis on my Osu! performance using new tools we have learned in class. In particular, the main findings from project 1 showed a possible relationship between accuracy and pp across different category groups.
+
+## Exploratory Data Analysis
+
+### Summary Statistics for Numeric Variables
+
+```{r}
+# summary statistics of numeric variables
+table1 <- osu %>%
+  select(accuracy, pp, top_pp, length, bpm, difficulty, overweightness) %>%
+  summarize_all(funs(mean, min, max, sd, var)) %>%
+  pivot_longer(cols=(1:35))
+
+```
+
+The following table shows the mean, minimum, maximum, standard deviation, and variance for each numeric variable in the dataset.
+
+Variable           | Accuracy | pp     | top pp  | Length   | BPM     | Difficulty | Overweightness
+-------------------|----------|--------|---------|----------|---------|------------|----------------
+Mean               | 94.671   | 34.84  | 59.06   | 111.18   | 163.84  | 3.717      | 9.58
+Minimum            | 86.47    | 28     | 33      | 56       | 79      | 3.09       | 0
+Maximum            | 100      | 54     | 121     | 242      | 222     | 4.74       | 169
+Standard Deviation | 3.204    | 5.776  | 17.944  | 44.73    | 28.167  | 0.374      | 31.021
+Variance           | 10.268   | 33.361 | 322.017 | 2000.762 | 793.402 | 0.14       | 962.33
+
+### Summary Statistics by Difficulty Category
+
+```{r}
+# summary statistics grouped by difficulty category
+table2 <- osu %>% group_by(difficulty_category) %>%
+  summarize(mean(difficulty),
+            min(difficulty),
+            max(difficulty),
+            sd(difficulty),
+            n_distinct(song),
+            mean(accuracy),
+            mean(pp),
+            mean(top_pp),
+            mean(length),
+            mean(bpm))
+```
+
+The following table includes the summary statistics by difficulty category. The summary statistics I used include mean, minimum, max, standard deviation of difficulty, the number of maps, the number of distinct songs (not maps), the mean and standard deviation of length, and the mean and standard deviation of bpm.
+
+
+Category           | Hard   | Insane
+-------------------|--------|---------
+Mean Difficulty    | 3.572  | 4.296
+Minimum Difficulty | 3.09   | 4.08
+Maximum Difficulty | 3.99   | 4.74
+Standard Deviation | 0.238  | 0.227
+Distinct Songs     | 39     | 9
+Mean Accuracy      | 95.081 | 93.032
+Mean pp            | 35.325 | 32.9
+Mean top pp        | 54.125 | 78.8
+Mean Length (s)    | 112    | 107.9
+Mean BPM           | 163.6  | 164.8
+
+### Correlation Heatmap
+
+```{r}
+library(ggcorrplot)
+library(tidyverse)
+# make a dataset with only numeric variables
+numeric <- osu %>%
+  select_if(is.numeric)
+
+# correlation matrix
+corr <- round(cor(numeric), 1)
+
+# correlation heat map
+ggcorrplot(corr, method='circle',
+           lab = TRUE,
+           title = 'Correlation Heatmap of Numeric Variables',
+           colors = c('plum4', 'white', 'olivedrab4'))
+```
+
+Considering Osu! is a circle clicking game, I made a correlation heatmap using circles. It seems that map difficulty ("difficulty") and average pp set by top 11,000 players ("top_pp") have the strongest positive correlation. On the other hand, map difficulty ("difficulty") and map accuracy set by me ("accuracy") have the strongest negative correlation.
+
+This makes sense in context. Harder maps tend to give the highest pp, especially when played by the most competitive players. It is also pretty expected of me to have lowered accuracy when playing higher difficulty maps due to a lack of skill. In the following sections, I will further explore the relationships between the significant variables.
+
+
+## MANOVA
+
+```{r}
+# manova
+manova_osu <- manova(cbind(accuracy, pp, length, bpm) ~ difficulty_category,
+                     data = osu)
+summary(manova_osu)
+```
+
+Since all of the p values > 0.05, none of the response variables differ significantly by difficulty category.
+
+### ANOVA
+
+I did not do ANOVA or post-hoc tests due to the fact that none of my response variables differed significantly by difficulty category.
+
+### Type 1 Error
+
+```{r}
+# pr(at least 1 type 1 error)
+1-(0.95^1)
+```
+
+I did 1 hypothesis test in the MANOVA. Therefore, my probability of making a type 1 error is 0.05. 
+
+### Assumptions
+
+1. Sample size: 50 observations is much larger than the 5 variables I used, therefore sample size assumption is met.
+
+2. Independence: All observations were individual plays by me.
+
+3. Normality and Variance
+
+```{r}
+library(ggplot2)
+# accuracy
+ggplot(data = osu, aes(x = difficulty_category, y = accuracy, fill = difficulty_category)) +
+  geom_boxplot(alpha = 0.7) +
+  ggtitle('Accuracy by Difficulty Category') +
+  scale_fill_brewer(palette = 'Set3')
+
+# pp
+ggplot(data = osu, aes(x = difficulty_category, y = pp, fill = difficulty_category)) +
+  geom_boxplot(alpha = 0.7) +
+  ggtitle('pp by Difficulty Category') +
+  scale_fill_brewer(palette = 'Set3')
+
+# length
+ggplot(data = osu, aes(x = difficulty_category, y = length, fill = difficulty_category)) +
+  geom_boxplot(alpha = 0.7) +
+  ggtitle('Length by Difficulty Category') +
+  scale_fill_brewer(palette = 'Set3')
+
+# bpm
+ggplot(data = osu, aes(x = difficulty_category, y = bpm, fill = difficulty_category)) +
+  geom_boxplot(alpha = 0.7) +
+  ggtitle('BPM by Difficulty Category') +
+  scale_fill_brewer(palette = 'Set3')
+```
+
+Generally speaking, accuracy, pp, and bpm were normally distributed across both categories, whereas length had significant right skews. Variance were also fairly similar across both categories, therefore the normality and variance assumption for MANOVA is mostly met.
+
+## Randomization Test
+
+Although I did not find any significant effects in the MANOVA, I will be running an ANOVA to test the effects between accuracy and difficulty categories. My null hypothesis will be that there is no difference in accuracy between difficulty categories. My alternative hypothesis is that there is a significant difference in accuracy between difficulty categories.
+
+```{r}
+# anova
+summary(aov(accuracy ~ difficulty_category, data = osu))
+```
+
+My observed F value is 3.434
+
+```{r}
+# observed F
+obs_F <- 3.434
+
+set.seed(348)
+# randomization test
+Fs <- replicate(5000,{
+  # permute accuracy across difficulty categories
+  new <- osu %>%
+    mutate(accuracy = sample(accuracy))
+  # within group variation
+  SSW <- new %>%
+    group_by(difficulty_category) %>%
+    summarize(SSW = sum((accuracy - mean(accuracy))^2)) %>%
+    summarize(sum(SSW)) %>% 
+    pull
+  # between group variation
+  SSB <- new %>% 
+    mutate(mean = mean(accuracy)) %>%
+    group_by(difficulty_category) %>% 
+    mutate(groupmean = mean(accuracy)) %>%
+    summarize(SSB = sum((mean - groupmean)^2)) %>%
+    summarize(sum(SSB)) %>%
+    pull
+  # f statistic
+  (SSB/1)/(SSW/48)
+})
+
+# Represent the distribution of the F-statistics for each randomized sample
+hist(Fs, prob=T, main = 'Distribution of Sampled F values');
+abline(v = obs_F, col="red",add=T)
+
+# proportion of f statstic greater than F
+mean(Fs > obs_F)
+```
+Only 6.56% of random samples did not predict that I achieved a 95% accuracy in game. In context, the null hypothesis means that my accuracy is about the same regardless of whether I'm playing a 'Hard' or 'Insane' map. This is good news for me, since it shows that I have pretty good accuracy across both difficulty categories!
+
+## Linear Regression Model
+
+I will be predicting `accuracy` from `length` and `difficulty_category`. First, I will need to center length, which is a numeric variable. I will also code difficulty category as 0 if the map is 'Hard' and 1 if the map is 'Insane', using a new variable 'diff_code'.
+
+```{r}
+# length center
+osu <- osu %>%
+  mutate(length_c = length - mean(length))
+
+# code difficulty
+osu <- osu %>% 
+  mutate(diff_code = ifelse(difficulty_category == "Hard", 0, 1))
+```
+
+I will then fit a regression model using the centered length and the coded difficulty variable.
+
+```{r}
+model1 <- lm(accuracy ~ length_c + diff_code + length_c*diff_code, data = osu)
+summary(model1)
+
+mean(osu$length)
+```
+
+For every 1 second increase in map length from the mean of 111.18 seconds, accuracy decreases by 2.99e-05%. Insane maps have a lower accuracy of 1.94% compared to Hard maps. Holding map difficulty constant, an increase in map length of 1 second leads to an increase of accuracy of 0.035%. 
+
+According to the adjusted R-squared value, this model explains 3.3% of the variation in accuracy. There are clearly many other variables in play.
+
+```{r}
+# graph
+ggplot(osu, aes(x = length_c, y = accuracy, fill = difficulty_category)) +
+  geom_smooth(method = 'lm', aes(col = difficulty_category)) +
+  ggtitle('Accuracy by Length') +
+  scale_color_brewer(palette = 'Dark2') +
+  geom_vline(xintercept = mean(osu$length, na.rm = TRUE), col='gray') +
+  labs(x = 'Length of Map (s)',
+       y = 'accuracy(%)')
+```
+
+### Assumptions
+
+```{r}
+# residuals against fitted values
+plot(model1, which = 1)
+
+# histogram of residuals
+hist(model1$residuals)
+
+# qq plot 
+plot(model1, which = 2)
+
+# normality
+shapiro.test(model1$residuals)
+
+#homoscedasity
+library(sandwich)
+library(lmtest)
+
+# Breusch-Pagan test
+# H0: homoscedasticity
+bptest(model1) 
+```
+
+The residual plot shows a slight curve in the red line, but over all there does not appear to be funneling or unequal variances. If anything, it seems to show that most of my observations have around a 95% accuracy. The normality assumption is met according to the QQ plot and the Shapiro-Wilk normality test (p = 0.15). 
+
+### Robust Standard Errors
+
+```{r}
+# uncorrected
+summary(model1)$coef
+
+# robust
+coeftest(model1, vcov = vcovHC(model1))
+```
+
+After calculating the robust standard errors, none of the slopes are significant in the new regression model. Previously, the slope for difficulty category and the interaction of length and difficulty category were significant. 
+
+### Bootstrap
+
+```{r}
+set.seed(348)
+samp_SEs <- replicate(5000, {
+  boot_data <- sample_frac(osu, replace = TRUE)
+  # fit regression model
+  fitboot <- lm(accuracy ~ length_c + diff_code + length_c*diff_code, data = osu)
+  # save the coefficients
+  coef(fitboot)
+})
+
+# estimated SEs
+samp_SEs %>%
+  t %>%
+  as.data.frame %>%
+  summarize_all(sd)
+
+# confidence interval for the estimates
+samp_SEs %>%
+  t %>%
+  as.data.frame %>%
+  pivot_longer(everything(), names_to = "estimates", values_to = "value") %>%
+  group_by(estimates) %>%
+  summarize(lower = quantile(value,.025), upper = quantile(value,.975))
+
+# compare with normal-theory SEs
+coeftest(model1)[,1:2]
+
+# compare with robust SEs
+coeftest(model1, vcov = vcovHC(model1))[,1:2]
+```
+
+All 4 coefficients appear to be very similar to what we had before, both in regression with uncorrected standard error and the regression with the robust standard error.
+
+
+## Logistic Regression
+
+For the logistic regression, I will be using the previously created `diff_code` variable as my binary categorical variable. 0 represents 'Hard' while 1 represents 'Insane'. My predictor variables will be accuracy and pp.
+
+```{r}
+# new regression model
+model2 <- glm(diff_code ~ accuracy + pp, data = osu, family = binomial(link="logit"))
+summary(model2)
+```
+
+In this context, accuracy decreases by 0.19% when the map is of 'Insane' difficulty while holding other predictors constant. Pp also decreases by 0.068 units when the map is 'Insane' compared to 'Hard', holding other variables constant.
+
+The coefficients represent odds ratios.
+
+### Confusion Matrix
+
+```{r}
+# predicted probabilities
+osu$prob <- predict(model2, type = "response")
+
+# if the probability is greater than 0.5, the map is 'Insane'
+osu$predicted <- ifelse(osu$prob > .5, "Insane", "Hard") 
+
+# confusion matrix
+table(truth = osu$diff_code, prediction = osu$predicted)
+
+```
+
+```{r}
+# accuracy
+(39+1)/50
+
+# sensitivity
+1/10
+
+# specificity
+39/40
+
+# precision
+1/2
+```
+
+The accuracy is 0.8, the sensitivity is 0.1, the specificity is 0.975, and the precision is 0.5.
+
+### Density Model
+
+```{r}
+# plot model
+ggplot(osu, aes(accuracy, diff_code)) +
+  geom_jitter(aes(color = predicted), width = .3, height = 0) +
+  stat_smooth(method="glm", method.args = list(family="binomial"), se = FALSE) +
+  geom_hline(yintercept = 0.5, lty = 2) +
+  ylab("Pr('Insane')") +
+  ggtitle('Predicted Difficulty Based on Accuracy')
+
+# save the predicted log-odds in the dataset
+osu$logit <- predict(model2)
+
+# compare to the outcome in the dataset with a density plot
+ggplot(osu, aes(logit, fill = as.factor(diff_code))) +
+  geom_density(alpha = .3) +
+  geom_vline(xintercept = 0, lty = 2) +
+  labs(fill = "Insane") +
+  ggtitle('Density of Log Odds')
+```
+
+### ROC and AUC
+
+```{r}
+library(plotROC) 
+
+# plot ROC
+ROCplot1 <- ggplot(osu) + 
+  geom_roc(aes(d = diff_code, m = prob), cutoffs.at = list(0.1, 0.5, 0.9))
+ROCplot1
+
+# AUC
+calc_auc(ROCplot1)
+```
+
+The area under the ROC curve is 0.7175. Using the rule of thumb, the model has a fair prediction power. This means that I can predict somewhat accurately whether a map is 'Hard' or 'Insane' based on accuracy.
+
+## References
+
+^1^ FAQ. (n.d.). Retrieved from https://osu.ppy.sh/wiki/en/FAQ 
+^2^ Pps by grumd - osu! farm maps. (n.d.). Retrieved from https://osu-pps.com/#/osu/maps 
+^3^ Slendermaniac · player info: Osu! (n.d.). Retrieved from https://osu.ppy.sh/users/4655284 
